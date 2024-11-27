@@ -6,7 +6,7 @@ import torch
 from transformers import AutoModelForTokenClassification, AutoTokenizer
 from transformers.utils import is_torch_npu_available
 
-from utils import get_docs_data, get_query_data, save_to_json,json_to_dict
+from utils import get_docs_data, get_query_data, save_to_json, json_to_dict, save_to_pkl, read_pkl
 import heapq
 import json
 from tqdm import tqdm
@@ -14,42 +14,27 @@ from scipy.sparse import csr_matrix
 import pickle
 from GTEEmbedding import GTEEmbedding
 
-FILE_PATH_PREFIX = "/home/ruzhi/work/mgte/data/"
 
 
 
-def prepare_dense_embedding_matrix(query_embedding, docs_embedding):
+
     
-    def get_dense_embedding_matrix(embedding, pkl_save_path):
-        dense_embedding_list = [v["embedding"]["dense_embeddings"] for v in embedding.values()]
-        dense_embedding_matrix = torch.tensor(dense_embedding_list).squeeze(1)
-        with open(pkl_save_path, 'wb') as f:
-            pickle.dump(dense_embedding_matrix, f)
+def get_dense_embedding_matrix(embedding, pkl_save_path):
+    dense_embedding_list = [v["embedding"]["dense_embeddings"] for v in embedding.values()]
+    dense_embedding_matrix = torch.tensor(dense_embedding_list).squeeze(1)
 
-    get_dense_embedding_matrix(docs_embedding, '/home/ruzhi/work/mgte/data/docs_dense_embedding_matrix.pkl')
-    get_dense_embedding_matrix(query_embedding, '/home/ruzhi/work/mgte/data/queries_dense_embedding_matrix.pkl')
+    with open(pkl_save_path, 'wb') as f:
+        pickle.dump(dense_embedding_matrix, f)
 
-    # #获取dense_embedding
-    # docs_dense_embedding_list = [v["embedding"]["dense_embeddings"] for v in docs_embedding.values()]
-    # # queries_dense_embedding_list = [v["query_embedding"]["dense_embeddings"] for v in query_embedding.values()]
-    # queries_dense_embedding_list = [v["query_embedding"]["dense_embeddings"] for v in query_embedding.values()]
 
-    # #将dense_embedding转化为tensor， batch_docs: [200000, 768]   batch_queries: [800, 768]
-    # queries_dense_embedding_matrix = torch.tensor(queries_dense_embedding_list).squeeze(1)
-    # with open('/home/ruzhi/work/mgte/data/queries_dense_embedding_matrix.pkl', 'wb') as f1:
-    #     pickle.dump(queries_dense_embedding_matrix, f1)
-    
-    # docs_dense_embedding_matrix = torch.tensor(docs_dense_embedding_list).squeeze(1)
-    # with open('/home/ruzhi/work/mgte/data/docs_dense_embedding_matrix.pkl', 'wb') as f2:
-    #     pickle.dump(docs_dense_embedding_matrix, f2)
-
-def get_one_hot_matrix(token_weights_list):
+def get_one_hot_matrix(token_weights_list, vocab_dict_file_path="/home/ruzhi/work/mgte/data/vocab_dict.json"):
     tokenizer = AutoTokenizer.from_pretrained('Alibaba-NLP/gte-multilingual-base')
     vocab_size = len(tokenizer)
-    print("词表大小为：", vocab_size)
+    # print("词表大小为：", vocab_size)
     row, col, data = [], [], []
-    with open("/home/ruzhi/work/mgte/data/vocab_dict.json",'r',encoding='utf-8') as file:
+    with open(vocab_dict_file_path,'r',encoding='utf-8') as file:
         vocab_dict = json.load(file)
+
     count = 0
     for index, token_weight in enumerate(token_weights_list):
         count += 1
@@ -68,55 +53,45 @@ def get_one_hot_matrix(token_weights_list):
         
     return  csr_matrix((np.array(data), (np.array(row), np.array(col))), shape=(count, vocab_size))
 
-def prepare_token_weights_matrix(query_embedding, docs_embedding):
 
-    def get_token_weights_matrix(embedding, pkl_save_path):
-        # queries_token_weights_list = [v["query_embedding"]["token_weights"][0] for v in query_embedding.values()]
-        token_weights_list = [v["embedding"]["token_weights"][0] for v in embedding.values()]
-        token_weights_matrix = get_one_hot_matrix(token_weights_list)
-        
-        with open(pkl_save_path, 'wb') as f:
-            pickle.dump(token_weights_matrix, f)
+
+def get_token_weights_matrix(embedding, pkl_save_path):
+    token_weights_list = [v["embedding"]["token_weights"][0] for v in embedding.values()]
+    token_weights_matrix = get_one_hot_matrix(token_weights_list)
+    
+    with open(pkl_save_path, 'wb') as f:
+        pickle.dump(token_weights_matrix, f)
 
     
-    # # queries_token_weights_list = [v["query_embedding"]["token_weights"][0] for v in query_embedding.values()]
-    # queries_token_weights_list = [v["embedding"]["token_weights"][0] for v in query_embedding.values()]
-    # queries_token_weights_matrix = get_one_hot_matrix(queries_token_weights_list)
-    # print("得到query matrix")
-    
-    # with open('/home/ruzhi/work/mgte/data/new_query_token_weights_matrix.pkl', 'wb') as f1:
-    #     pickle.dump(queries_token_weights_matrix, f1)
-    get_token_weights_matrix(query_embedding, '/home/ruzhi/work/mgte/data/new_query_token_weights_matrix.pkl')
-   
-    # docs_token_weights_list = [v["embedding"]["token_weights"][0] for v in docs_embedding.values()]
-    # docs_token_weights_matrix = get_one_hot_matrix(docs_token_weights_list)
-    # print("得到docs matrix")
-    
-    # with open('/home/ruzhi/work/mgte/data/new_docs_token_weights_matrix.pkl', 'wb') as f2:
-    #     pickle.dump(docs_token_weights_matrix, f2)
-    
-    get_token_weights_matrix(docs_embedding, '/home/ruzhi/work/mgte/data/new_docs_token_weights_matrix.pkl')
 
-def prepare_embedding(doc_file_path, query_file_path):
-
-    def get_embedding(model, json_read_path, json_save_path):
-        dic = get_docs_data(json_read_path)
-        for v in tqdm(dic.values()):
-            v["embedding"] = model.encode(v["text"], return_dense = True, return_sparse = True)
-        save_to_json(json_save_path, dic)
-   
+def prepare_embedding(doc_file_path, docs_embedding_file_path, query_file_path, query_embedding_file_path):
     model = GTEEmbedding('Alibaba-NLP/gte-multilingual-base')
+
+    
+    docs_dic = get_docs_data(doc_file_path)
+    for v in tqdm(docs_dic.values()):
+        v["embedding"] = model.encode(v["text"], return_dense = True, return_sparse = True)
+    # save_to_pkl(file_path=docs_embedding_file_path, data=docs_dic)
+    save_to_json("/home/ruzhi/work/mgte/data/docs_embedding.json", docs_dic)
+
+    
+    query_dic = get_query_data(query_file_path)
+    for v in tqdm(query_dic.values()):
+        v["embedding"] = model.encode(v["query"], return_dense = True, return_sparse = True)
+    # save_to_pkl(file_path=query_embedding_file_path, data=query_dic)
+    save_to_json("/home/ruzhi/work/mgte/data/query_embedding.json", query_dic)
+    
+
+if __name__ == '__main__':
     doc_file_path = "/home/ruzhi/work/mgte/data/corpus.jsonl"
-    query_file_path = "/home/ruzhi/work/mgte/data/MLDR_test.jsonl"
+    query_file_path = "/home/ruzhi/work/mgte/data/MLDR/en/MLDR_test.jsonl"
+    docs_embedding_save_path = "/home/ruzhi/work/mgte/data/docs_embedding.json"
+    query_embedding_sava_path = "/home/ruzhi/work/mgte/data/query_embedding.json"
 
-    get_embedding(model, doc_file_path, json_save_path='/home/ruzhi/work/mgte/data/docs_embedding.json')
-    get_embedding(model, query_file_path, json_save_path='/home/ruzhi/work/mgte/data/query_embedding.json')
+    # 读取带有embedding的数据
+    query_embedding = json_to_dict(query_embedding_sava_path)
+    docs_embedding = json_to_dict(docs_embedding_save_path)
 
-
-# if __name__ == '__main__':
-#     #读取带有embedding的数据
-#     query_embedding = json_to_dict(FILE_PATH_PREFIX + "new_query_embedding.json")
-#     docs_embedding = json_to_dict("/home/ruzhi/work/mgte/data/docs_embedding.json")
-#     print("读取embedding数据完成!")
-#     prepare_dense_embedding_matrix(query_embedding, docs_embedding)
-#     prepare_token_weights_matrix(query_embedding, docs_embedding)
+    print("读取embedding数据完成!")
+    get_dense_embedding_matrix(embedding=query_embedding, pkl_save_path='/home/ruzhi/work/mgte/data/rewrite_query_dense_embedding_matrix.pkl')
+    get_token_weights_matrix(query_embedding, '/home/ruzhi/work/mgte/data/rewrite_query_token_weights_matrix.pkl')
